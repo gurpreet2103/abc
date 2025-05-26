@@ -4,7 +4,14 @@ const crypto = require('crypto');
 const { X509Certificate } = require('crypto');
 
 const app = express();
-app.use(express.json({ limit: '5mb' }));
+
+// Use express.json with verify to save rawBody for signature verification
+app.use(express.json({
+  limit: '5mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf.toString('utf8');
+  }
+}));
 
 // Utility to build the expected message string
 function buildMessage(transmissionId, transmissionTime, webhookId, body) {
@@ -42,25 +49,12 @@ async function verifyPayPalSignature(headers, rawBody, webhookId) {
   return isValid;
 }
 
-// Raw body parser middleware
-app.use((req, res, next) => {
-  let rawData = '';
-  req.setEncoding('utf8');
-  req.on('data', chunk => rawData += chunk);
-  req.on('end', () => {
-    req.rawBody = rawData;
-    try {
-      req.body = JSON.parse(rawData);
-    } catch (err) {
-      return res.status(400).send('Invalid JSON');
-    }
-    next();
-  });
-});
-
 // Webhook endpoint
 app.post('/paypal-webhook', async (req, res) => {
-  const webhookId = process.env.PAYPAL_WEBHOOK_ID; // Set this in Render environment variables
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID; // Set this in your environment
+
+  console.log('Webhook received');
+  console.log('Raw body (first 100 chars):', req.rawBody?.slice(0, 100));
 
   try {
     const isValid = await verifyPayPalSignature(req.headers, req.rawBody, webhookId);
