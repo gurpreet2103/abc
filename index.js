@@ -5,56 +5,76 @@ const { X509Certificate } = require('crypto');
 
 const app = express();
 
-// Use express.json with verify to save rawBody for signature verification
-app.use(express.json({
-  limit: '5mb',
-  verify: (req, res, buf) => {
-    req.rawBody = buf.toString('utf8');
-  }
-}));
+// Middleware to capture raw body as string
+app.use((req, res, next) => {
+  let rawData = '';
+  req.setEncoding('utf8');
+  req.on('data', chunk => rawData += chunk);
+  req.on('end', () => {
+    req.rawBody = rawData;
+    try {
+      req.body = JSON.parse(rawData);
+    } catch (err) {
+      return res.status(400).send('Invalid JSON');
+    }
+    next();
+  });
+});
 
-// Utility to build the expected message string
+// Helper: Normalize header keys to lowercase for safe access
+function normalizeHeaders(headers) {
+  const normalized = {};
+  for (const key in headers) {
+    normalized[key.toLowerCase()] = headers[key];
+  }
+  return normalized;
+}
+
+// Build message string per PayPal docs
 function buildMessage(transmissionId, transmissionTime, webhookId, body) {
   return `${transmissionId}|${transmissionTime}|${webhookId}|${body}`;
 }
 
-// Verifies PayPal signature
+// Verify PayPal signature
 async function verifyPayPalSignature(headers, rawBody, webhookId) {
-  const {
-    'paypal-cert-url': certUrl,
-    'paypal-transmission-id': transmissionId,
-    'paypal-transmission-sig': transmissionSig,
-    'paypal-transmission-time': transmissionTime,
-    'paypal-auth-algo': authAlgo,
-  } = headers;
+  const h = normalizeHeaders(headers);
+
+  const certUrl = h['paypal-cert-url'];
+  const transmissionId = h['paypal-transmission-id'];
+  const transmissionSig = h['paypal-transmission-sig'];
+  const transmissionTime = h['paypal-transmission-time'];
+  const authAlgo = h['paypal-auth-algo'];
+
+  console.log('Headers used for verification:', {
+    certUrl, transmissionId, transmissionSig, transmissionTime, authAlgo, webhookId,
+  });
 
   if (!certUrl || !transmissionId || !transmissionSig || !transmissionTime || !authAlgo) {
     throw new Error('Missing PayPal headers.');
   }
 
-  // Fetch certificate
+  // Fetch PayPal certificate
   const certRes = await axios.get(certUrl);
   const cert = certRes.data;
   const x509 = new X509Certificate(cert);
   const publicKey = x509.publicKey;
 
   const message = buildMessage(transmissionId, transmissionTime, webhookId, rawBody);
+  console.log('Message string for verification:', message);
 
-  // Verify signature
   const verifier = crypto.createVerify('RSA-SHA256');
   verifier.update(message);
   verifier.end();
 
   const isValid = verifier.verify(publicKey, transmissionSig, 'base64');
+  console.log('Signature valid?', isValid);
   return isValid;
 }
 
-// Webhook endpoint
 app.post('/paypal-webhook', async (req, res) => {
-  const webhookId = process.env.PAYPAL_WEBHOOK_ID; // Set this in your environment
-
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID;
   console.log('Webhook received');
-  console.log('Raw body (first 100 chars):', req.rawBody?.slice(0, 100));
+  console.log('Raw body (first 100 chars):', req.rawBody.substring(0, 100));
 
   try {
     const isValid = await verifyPayPalSignature(req.headers, req.rawBody, webhookId);
