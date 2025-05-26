@@ -18,7 +18,6 @@ function normalizeHeaders(headers) {
 
 // Build the message buffer for signature verification
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
-  // Join parts with '|' as Buffer to preserve exact bytes
   return Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
     Buffer.from('|'),
@@ -44,11 +43,14 @@ function isPayPalDomain(url) {
 const cachedCerts = {};
 async function getCachedCert(certUrl) {
   if (cachedCerts[certUrl]) {
+    console.log('✅ Certificate retrieved from cache');
     return cachedCerts[certUrl];
   }
 
+  console.log('🌐 Fetching certificate from URL:', certUrl);
   const res = await axios.get(certUrl, { timeout: 3000 });
   cachedCerts[certUrl] = res.data;
+  console.log('✅ Certificate successfully fetched.');
   return res.data;
 }
 
@@ -57,6 +59,8 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   console.time('🔒 Total signature verification');
 
   const h = normalizeHeaders(headers);
+  console.log('📋 PayPal headers:', h);
+
   const certUrl = h['paypal-cert-url'];
   const transmissionId = h['paypal-transmission-id'];
   const transmissionSig = h['paypal-transmission-sig'];
@@ -83,26 +87,27 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   try {
     const x509 = new X509Certificate(cert);
     publicKeyPem = x509.publicKey.export({ type: 'spki', format: 'pem' });
+    console.log('✅ Public key extracted from certificate.');
   } catch (err) {
     throw new Error(`Failed to parse certificate: ${err.message}`);
   }
 
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
-
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('Message string for verification (first 200 chars):');
-    console.log(messageBuffer.toString('utf8').substring(0, 200));
-  }
+  console.log('📨 Message string for verification (utf8):');
+  console.log(messageBuffer.toString('utf8').substring(0, 500)); // log first 500 chars or less
 
   try {
     const verifier = crypto.createVerify('RSA-SHA256');
     verifier.update(messageBuffer);
     verifier.end();
 
-    // Decode signature explicitly to Buffer
     const signatureBuffer = Buffer.from(transmissionSig, 'base64');
+    console.log(`📄 Signature (base64, length=${transmissionSig.length}):`, transmissionSig);
+    console.log(`📄 Signature buffer length: ${signatureBuffer.length}`);
 
     const isValid = verifier.verify(publicKeyPem, signatureBuffer);
+    console.log('🔐 Signature valid?', isValid);
+
     console.timeEnd('🔒 Total signature verification');
     return isValid;
   } catch (err) {
@@ -128,7 +133,7 @@ app.post('/paypal-webhook', async (req, res) => {
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('📥 Webhook received');
-    console.log('Raw body (first 100 chars):', rawBody.toString('utf8').substring(0, 100));
+    console.log('Raw body (first 200 chars):', rawBody.toString('utf8').substring(0, 200));
   }
 
   try {
