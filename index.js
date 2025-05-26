@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const { X509Certificate } = require('crypto');
 const app = express();
 
-// Middleware to preserve raw body with limit
+// Middleware to preserve raw body as Buffer
 app.use(express.raw({ type: 'application/json', limit: '1mb' }));
 
 // Normalize headers to lowercase
@@ -16,9 +16,18 @@ function normalizeHeaders(headers) {
   return normalized;
 }
 
-// Build the message string as per PayPal’s spec
-function buildMessage(transmissionId, transmissionTime, webhookId, body) {
-  return `${transmissionId}|${transmissionTime}|${webhookId}|${body}`;
+// Build the message string using Buffer concatenation for exact bytes
+function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
+  // Join with '|' as Buffer for exact binary correctness
+  return Buffer.concat([
+    Buffer.from(transmissionId, 'utf8'),
+    Buffer.from('|'),
+    Buffer.from(transmissionTime, 'utf8'),
+    Buffer.from('|'),
+    Buffer.from(webhookId, 'utf8'),
+    Buffer.from('|'),
+    rawBodyBuffer,
+  ]);
 }
 
 // Verify that cert URL is a valid PayPal domain
@@ -44,8 +53,8 @@ async function getCachedCert(certUrl) {
   return res.data;
 }
 
-// Signature verification
-async function verifyPayPalSignature(headers, rawBody, webhookId) {
+// Signature verification (using Buffer message)
+async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   console.time('🔒 Total signature verification');
 
   const h = normalizeHeaders(headers);
@@ -80,11 +89,11 @@ async function verifyPayPalSignature(headers, rawBody, webhookId) {
     throw new Error(`Failed to parse certificate: ${err.message}`);
   }
 
-  const message = buildMessage(transmissionId, transmissionTime, webhookId, rawBody.toString());
+  const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
 
   try {
     const verifier = crypto.createVerify('RSA-SHA256');
-    verifier.update(message);
+    verifier.update(messageBuffer);
     verifier.end();
 
     const isValid = verifier.verify(publicKeyPem, transmissionSig, 'base64');
@@ -98,29 +107,28 @@ async function verifyPayPalSignature(headers, rawBody, webhookId) {
 // Webhook route
 app.post('/paypal-webhook', async (req, res) => {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID;
-  const rawBody = req.body;
+  const rawBody = req.body; // Buffer from express.raw()
 
   if (!rawBody) {
     return res.status(400).json({ success: false, message: 'Missing raw body' });
   }
 
-  const rawBodyStr = rawBody.toString('utf8');
   let parsedBody;
-
   try {
-    parsedBody = JSON.parse(rawBodyStr);
+    parsedBody = JSON.parse(rawBody.toString('utf8'));
   } catch (err) {
     return res.status(400).json({ success: false, message: 'Invalid JSON' });
   }
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('📥 Webhook received');
-    console.log('Raw body (first 100 chars):', rawBodyStr.substring(0, 100));
+    console.log('Raw body (first 100 chars):', rawBody.toString('utf8').substring(0, 100));
   }
 
   try {
     console.time('✅ Webhook processing');
-    const isValid = await verifyPayPalSignature(req.headers, rawBodyStr, webhookId);
+    // Pass raw Buffer directly here, NOT the string
+    const isValid = await verifyPayPalSignature(req.headers, rawBody, webhookId);
 
     if (!isValid) {
       console.warn('❌ Invalid PayPal signature');
