@@ -39,18 +39,37 @@ function isPayPalDomain(url) {
   }
 }
 
-// Cache certificates to reduce repeated HTTP requests
+// TTL cache for certificates with expiry
 const cachedCerts = {};
+const CERT_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 async function getCachedCert(certUrl) {
-  if (cachedCerts[certUrl]) {
+  const now = Date.now();
+
+  const cached = cachedCerts[certUrl];
+  if (cached && now < cached.expiry) {
     console.log('✅ Certificate retrieved from cache');
-    return cachedCerts[certUrl];
+    return cached.pem;
   }
 
   console.log('🌐 Fetching certificate from URL:', certUrl);
-  const res = await axios.get(certUrl, { timeout: 3000 });
-  cachedCerts[certUrl] = res.data;
-  console.log('✅ Certificate successfully fetched.');
+  let res;
+  try {
+    res = await axios.get(certUrl, { timeout: 5000, responseType: 'text' });
+  } catch (err) {
+    throw new Error(`Failed to fetch certificate from URL: ${err.message}`);
+  }
+
+  if (res.status !== 200 || !res.data) {
+    throw new Error(`Invalid response fetching certificate: HTTP ${res.status}`);
+  }
+
+  cachedCerts[certUrl] = {
+    pem: res.data,
+    expiry: now + CERT_TTL_MS,
+  };
+
+  console.log('✅ Certificate successfully fetched and cached.');
   return res.data;
 }
 
@@ -66,12 +85,14 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const transmissionSig = h['paypal-transmission-sig'];
   const transmissionTime = h['paypal-transmission-time'];
   const authAlgo = h['paypal-auth-algo'];
-  const headerWebhookId = h['webhook-id']; // DEBUG: extra header check
+  const headerWebhookId = h['webhook-id']; // PayPal webhook ID header
 
   console.log('🔍 Local PAYPAL_WEBHOOK_ID:', webhookId);
   console.log('🔍 Header webhook-id:', headerWebhookId);
+
+  // Strict check: local webhook ID must match header webhook ID
   if (webhookId !== headerWebhookId) {
-    console.warn('⚠️ WARNING: Local webhook ID does NOT match header webhook-id');
+    throw new Error('Webhook ID mismatch between local config and PayPal header');
   }
 
   if (!certUrl || !isPayPalDomain(certUrl)) throw new Error('Invalid or missing PayPal certificate URL');
@@ -81,31 +102,29 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   if (!authAlgo) throw new Error('Missing PayPal header: paypal-auth-algo');
   if (!webhookId) throw new Error('Missing local config: PAYPAL_WEBHOOK_ID');
 
-  let cert;
-  try {
-    console.time('🌐 Fetch or cache cert');
-    cert = await getCachedCert(certUrl);
-    console.timeEnd('🌐 Fetch or cache cert');
-  } catch (err) {
-    throw new Error(`Failed to fetch certificate: ${err.message}`);
+  // Validate algorithm is exactly what PayPal expects
+  if (authAlgo !== 'SHA256withRSA') {
+    throw new Error(`Unexpected PayPal auth algorithm: ${authAlgo}`);
   }
+
+  // Fetch or get cached certificate PEM
+  const certPem = await getCachedCert(certUrl);
 
   let publicKeyPem;
   try {
-    const x509 = new X509Certificate(cert);
+    const x509 = new X509Certificate(certPem);
     publicKeyPem = x509.publicKey.export({ type: 'spki', format: 'pem' });
     console.log('✅ Public key extracted from certificate.');
   } catch (err) {
     throw new Error(`Failed to parse certificate: ${err.message}`);
   }
 
-  // Build the message buffer exactly as PayPal expects
+  // Build message buffer exactly as PayPal expects
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
-  const messageUtf8 = messageBuffer.toString('utf8');
 
   console.log('📨 Message string for verification (utf8, snippet):');
-  console.log(messageUtf8.substring(0, 500));
-  console.log('📨 Message length:', messageUtf8.length);
+  console.log(messageBuffer.toString('utf8', 0, 500));
+  console.log('📨 Message length:', messageBuffer.length);
   console.log('🧩 Raw body length:', rawBodyBuffer.length);
 
   // Base64 decode signature from header
