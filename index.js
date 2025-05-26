@@ -5,7 +5,6 @@ const { X509Certificate } = require('crypto');
 const CRC32 = require('crc-32');
 
 const app = express();
-
 app.use(express.raw({ type: 'application/json', limit: '1mb' }));
 
 function normalizeHeaders(headers) {
@@ -18,7 +17,6 @@ function normalizeHeaders(headers) {
 
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
   const crc32Format = (process.env.CRC32_FORMAT || 'hex').toLowerCase();
-  console.log('🔍 Environment CRC32_FORMAT:', process.env.CRC32_FORMAT);
   const rawCrc32 = CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0;
   let crc32Hash;
 
@@ -27,19 +25,9 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
   } else if (crc32Format === 'padded') {
     crc32Hash = rawCrc32.toString().padStart(10, '0');
   } else {
-    console.warn('⚠️ Invalid CRC32_FORMAT, defaulting to hex:', crc32Format);
-    crc32Hash = rawCrc32.toString(16); // Default to hex
+    console.warn('⚠️ Invalid CRC32_FORMAT, defaulting to hex');
+    crc32Hash = rawCrc32.toString(16);
   }
-
-  console.log('🔍 transmissionId:', transmissionId);
-  console.log('🔍 transmissionTime:', transmissionTime);
-  console.log('🔍 webhookId:', webhookId);
-  console.log('🔍 rawCrc32 (unsigned):', rawCrc32);
-  console.log('🔍 crc32Hash:', crc32Hash);
-  console.log('🔍 crc32Format:', crc32Format);
-  console.log('🔍 rawBody (first 2000 chars, truncated):', rawBodyBuffer.toString('utf8').substring(0, 2000));
-  console.log('🔍 rawBody SHA256:', crypto.createHash('sha256').update(rawBodyBuffer).digest('hex'));
-  console.log('🔍 rawBody CRC32 (hex for reference):', rawCrc32.toString(16));
 
   const messageBuffer = Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
@@ -53,21 +41,21 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
     rawBodyBuffer,
   ]);
 
-  console.log('🔍 Full message buffer (first 2000 chars, truncated):', messageBuffer.toString('utf8', 0, 2000));
-  console.log('🔍 messageBuffer SHA256:', crypto.createHash('sha256').update(messageBuffer).digest('hex'));
   return messageBuffer;
 }
 
 function isPayPalDomain(url) {
   try {
-    const { hostname } = new URL(url);
-    const isValid = hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
+    const parsed = new URL(url);
+    const hostname = parsed.hostname;
+    const protocol = parsed.protocol;
+
+    if (protocol !== 'https:') return false;
     if (hostname.includes('sandbox.paypal.com')) {
-      console.warn('⚠️ Certificate URL indicates sandbox environment. Ensure PAYPAL_WEBHOOK_ID is for sandbox:', url);
-    } else {
-      console.log('✅ Certificate URL indicates production environment:', url);
+      console.warn('⚠️ Using sandbox certificate:', hostname);
     }
-    return isValid;
+
+    return hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
   } catch {
     return false;
   }
@@ -80,20 +68,12 @@ async function getCachedCert(certUrl) {
   const now = Date.now();
   const cached = cachedCerts[certUrl];
   if (cached && now < cached.expiry) {
-    console.log('✅ Certificate retrieved from cache');
     return cached.pem;
   }
 
-  console.log('🌐 Fetching certificate from URL:', certUrl);
-  let res;
-  try {
-    res = await axios.get(certUrl, { timeout: 5000, responseType: 'text' });
-  } catch (err) {
-    throw new Error(`Failed to fetch certificate: ${err.message}`);
-  }
-
+  const res = await axios.get(certUrl, { timeout: 5000, responseType: 'text' });
   if (res.status !== 200 || !res.data) {
-    throw new Error(`Invalid response fetching certificate: HTTP ${res.status}`);
+    throw new Error(`Failed to fetch certificate: HTTP ${res.status}`);
   }
 
   cachedCerts[certUrl] = {
@@ -101,14 +81,12 @@ async function getCachedCert(certUrl) {
     expiry: now + CERT_TTL_MS,
   };
 
-  console.log('✅ Certificate successfully fetched and cached.');
   return res.data;
 }
 
-async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
+async function verifyPayPalSignature(headers, rawBodyBuffer, localWebhookId) {
   console.time('🔒 Total signature verification');
   const h = normalizeHeaders(headers);
-  console.log('📋 PayPal headers:', h);
 
   const certUrl = h['paypal-cert-url'];
   const transmissionId = h['paypal-transmission-id'];
@@ -117,129 +95,72 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const authAlgo = h['paypal-auth-algo'];
   const headerWebhookId = h['webhook-id'];
 
-  console.log('🔍 Local PAYPAL_WEBHOOK_ID:', webhookId);
-  console.log('🔍 Header webhook-id:', headerWebhookId);
+  if (!certUrl || !isPayPalDomain(certUrl)) throw new Error('Invalid certificate URL');
+  if (!transmissionId || !transmissionSig || !transmissionTime || !authAlgo || !headerWebhookId) {
+    throw new Error('Missing required PayPal headers');
+  }
 
-  if (webhookId !== headerWebhookId) {
+  if (authAlgo !== 'SHA256withRSA') {
+    throw new Error(`Unexpected auth algorithm: ${authAlgo}`);
+  }
+
+  if (!crypto.timingSafeEqual(Buffer.from(localWebhookId), Buffer.from(headerWebhookId))) {
     throw new Error('Webhook ID mismatch');
   }
 
-  if (!certUrl || !isPayPalDomain(certUrl)) throw new Error('Invalid certificate URL');
-  if (!transmissionId) throw new Error('Missing paypal-transmission-id');
-  if (!transmissionSig) throw new Error('Missing paypal-transmission-sig');
-  if (!transmissionTime) throw new Error('Missing paypal-transmission-time');
-  if (!authAlgo) throw new Error('Missing paypal-auth-algo');
-  if (!webhookId) throw new Error('Missing PAYPAL_WEBHOOK_ID');
-  if (authAlgo !== 'SHA256withRSA') throw new Error(`Unexpected auth algorithm: ${authAlgo}`);
-
-  const timeDiff = Math.abs(new Date() - new Date(transmissionTime)) / 1000 / 60;
-  if (timeDiff > 5) {
-    console.warn('⚠️ Transmission time outside acceptable window:', transmissionTime);
-  }
-
   const certPem = await getCachedCert(certUrl);
-  let publicKeyPem;
-  try {
-    const x509 = new X509Certificate(certPem);
-    publicKeyPem = x509.publicKey.export({ type: 'spki', format: 'pem' });
-    console.log('✅ Public key extracted from certificate.');
-  } catch (err) {
-    throw new Error(`Failed to parse certificate: ${err.message}`);
-  }
+  const x509 = new X509Certificate(certPem);
+  const publicKeyPem = x509.publicKey.export({ type: 'spki', format: 'pem' });
 
-  const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
-
-  console.log('📨 Message string for verification (utf8, snippet):', messageBuffer.toString('utf8', 0, 2000));
-  console.log('📨 Message length:', messageBuffer.length);
-  console.log('🧩 Raw body length:', rawBodyBuffer.length);
-
+  const messageBuffer = buildMessage(transmissionId, transmissionTime, headerWebhookId, rawBodyBuffer);
   const signatureBuffer = Buffer.from(transmissionSig, 'base64');
-  console.log(`📄 Signature (base64, length=${transmissionSig.length}):`, transmissionSig);
-  console.log(`📄 Signature buffer length: ${signatureBuffer.length}`);
 
-  try {
-    const verifier = crypto.createVerify('RSA-SHA256');
-    verifier.update(messageBuffer);
-    verifier.end();
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(messageBuffer);
+  verifier.end();
 
-    const isValid = verifier.verify(publicKeyPem, signatureBuffer);
-    console.log('🔐 Signature valid?', isValid);
-
-    const digest = crypto.createHash('sha256').update(messageBuffer).digest('base64');
-    console.log('🔍 SHA256 digest of message (base64):', digest);
-
-    console.timeEnd('🔒 Total signature verification');
-    return isValid;
-  } catch (err) {
-    throw new Error(`Signature verification error: ${err.message}`);
-  }
+  const isValid = verifier.verify(publicKeyPem, signatureBuffer);
+  console.timeEnd('🔒 Total signature verification');
+  return isValid;
 }
 
 app.post('/paypal-webhook', async (req, res) => {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID;
   const rawBody = req.body;
 
-  console.log('📢 Incoming Content-Type:', req.headers['content-type']);
   if (!rawBody) {
     return res.status(400).json({ success: false, message: 'Missing raw body' });
   }
 
-  console.log('🧩 Raw body length:', rawBody.length);
-  console.log('🧩 Raw body hex prefix:', rawBody.slice(0, 20).toString('hex'));
-  console.log('🧩 Raw body SHA256:', crypto.createHash('sha256').update(rawBody).digest('hex'));
+  if (process.env.BYPASS_SIGNATURE_VERIFICATION === 'true') {
+    console.warn('⚠️ Bypassing signature verification (dev mode)');
+    return res.json({ success: true, bypassed: true });
+  }
 
   let parsedBody;
   try {
     parsedBody = JSON.parse(rawBody.toString('utf8'));
-  } catch (err) {
-    return res.status(400).json({ success: false, message: 'Invalid JSON' });
-  }
-
-  if (process.env.NODE_ENV !== 'production') {
-    console.log('📥 Webhook received');
-    console.log('Raw body (first 2000 chars, truncated):', rawBody.toString('utf8').substring(0, 2000));
+  } catch {
+    return res.status(400).json({ success: false, message: 'Invalid JSON body' });
   }
 
   try {
-    console.time('✅ Webhook processing');
     const isValid = await verifyPayPalSignature(req.headers, rawBody, webhookId);
-
     if (!isValid) {
-      const crc32Format = (process.env.CRC32_FORMAT || 'hex').toLowerCase();
-      const rawCrc32 = CRC32.str(rawBody.toString('utf8')) >>> 0;
-      let crc32Hash = crc32Format === 'hex' ? rawCrc32.toString(16) : 
-                      crc32Format === 'padded' ? rawCrc32.toString().padStart(10, '0') : 
-                      rawCrc32.toString();
-      const messageBuffer = buildMessage(
-        req.headers['paypal-transmission-id'],
-        req.headers['paypal-transmission-time'],
-        req.headers['webhook-id'],
-        rawBody
-      );
-      console.warn('❌ Invalid PayPal signature');
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid PayPal signature',
-        details: {
-          transmissionId: req.headers['paypal-transmission-id'],
-          transmissionTime: req.headers['paypal-transmission-time'],
-          webhookId: req.headers['webhook-id'],
-          crc32Hash,
-          crc32Format,
-          rawBodySha256: crypto.createHash('sha256').update(rawBody).digest('hex'),
-          messageBufferSha256: crypto.createHash('sha256').update(messageBuffer).digest('hex'),
-          messageDigest: crypto.createHash('sha256').update(messageBuffer).digest('base64'),
-        },
-      });
+      return res.status(400).json({ success: false, message: 'Invalid PayPal signature' });
     }
 
-    console.log('✅ Valid webhook received');
-    console.timeEnd('✅ Webhook processing');
     return res.json({ success: true, data: parsedBody });
   } catch (err) {
-    console.error('❌ Error verifying webhook:', err.message);
+    console.error('❌ Signature verification failed:', err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// Optional test endpoint for n8n/dev testing
+app.post('/test', express.json(), (req, res) => {
+  console.log('🔬 Test request body:', req.body);
+  res.json({ success: true, received: req.body });
 });
 
 const PORT = process.env.PORT || 10000;
