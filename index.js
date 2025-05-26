@@ -35,7 +35,8 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
   console.log('🔍 webhookId:', webhookId);
   console.log('🔍 crc32Hash:', crc32Hash);
   console.log('🔍 crc32Format:', crc32Format);
-  console.log('🔍 rawBody (first 500 chars):', rawBodyBuffer.toString('utf8').substring(0, 500));
+  console.log('🔍 rawBody (first 1000 chars, truncated):', rawBodyBuffer.toString('utf8').substring(0, 1000));
+  console.log('🔍 rawBody SHA256:', crypto.createHash('sha256').update(rawBodyBuffer).digest('hex'));
 
   const messageBuffer = Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
@@ -49,7 +50,7 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
     rawBodyBuffer,
   ]);
 
-  console.log('🔍 Full message buffer (first 500 chars):', messageBuffer.toString('utf8', 0, 500));
+  console.log('🔍 Full message buffer (first 1000 chars, truncated):', messageBuffer.toString('utf8', 0, 1000));
   return messageBuffer;
 }
 
@@ -59,7 +60,9 @@ function isPayPalDomain(url) {
     const { hostname } = new URL(url);
     const isValid = hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
     if (hostname.includes('sandbox.paypal.com')) {
-      console.warn('⚠️ Certificate URL indicates sandbox environment:', url);
+      console.warn('⚠️ Certificate URL indicates sandbox environment. Ensure PAYPAL_WEBHOOK_ID is for sandbox:', url);
+    } else {
+      console.log('✅ Certificate URL indicates production environment:', url);
     }
     return isValid;
   } catch {
@@ -138,9 +141,7 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   // Optional: Validate timestamp to prevent replay attacks
   const timeDiff = Math.abs(new Date() - new Date(transmissionTime)) / 1000 / 60;
   if (timeDiff > 5) {
-    console.warn('⚠️ Transmission time is outside acceptable window:', transmissionTime);
-    // Temporarily allow for testing
-    // throw new Error('Transmission time is outside acceptable window: ' + transmissionTime);
+    console.warn('⚠️ Transmission time is outside acceptable window. Possible test or replay:', transmissionTime);
   }
 
   // Fetch or get cached certificate PEM
@@ -159,7 +160,7 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
 
   console.log('📨 Message string for verification (utf8, snippet):');
-  console.log(messageBuffer.toString('utf8', 0, 500));
+  console.log(messageBuffer.toString('utf8', 0, 1000));
   console.log('📨 Message length:', messageBuffer.length);
   console.log('🧩 Raw body length:', rawBodyBuffer.length);
 
@@ -200,6 +201,7 @@ app.post('/paypal-webhook', async (req, res) => {
 
   console.log('🧩 Raw body length:', rawBody.length);
   console.log('🧩 Raw body hex prefix:', rawBody.slice(0, 20).toString('hex'));
+  console.log('🧩 Raw body SHA256:', crypto.createHash('sha256').update(rawBody).digest('hex'));
 
   let parsedBody;
   try {
@@ -210,7 +212,7 @@ app.post('/paypal-webhook', async (req, res) => {
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('📥 Webhook received');
-    console.log('Raw body (first 500 chars):', rawBody.toString('utf8').substring(0, 500));
+    console.log('Raw body (first 1000 chars, truncated):', rawBody.toString('utf8').substring(0, 1000));
   }
 
   try {
@@ -222,6 +224,12 @@ app.post('/paypal-webhook', async (req, res) => {
       const crc32Hash = crc32Format === 'hex'
         ? (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(16)
         : (CRC32.str(rawBody.toString('utf8')) >>> 0).toString();
+      const messageBuffer = buildMessage(
+        req.headers['paypal-transmission-id'],
+        req.headers['paypal-transmission-time'],
+        req.headers['webhook-id'],
+        rawBody
+      );
       console.warn('❌ Invalid PayPal signature');
       return res.status(400).json({
         success: false,
@@ -232,12 +240,8 @@ app.post('/paypal-webhook', async (req, res) => {
           webhookId: req.headers['webhook-id'],
           crc32Hash,
           crc32Format,
-          messageDigest: crypto.createHash('sha256').update(buildMessage(
-            req.headers['paypal-transmission-id'],
-            req.headers['paypal-transmission-time'],
-            req.headers['webhook-id'],
-            rawBody
-          )).digest('base64'),
+          rawBodySha256: crypto.createHash('sha256').update(rawBody).digest('hex'),
+          messageDigest: crypto.createHash('sha256').update(messageBuffer).digest('base64'),
         },
       });
     }
