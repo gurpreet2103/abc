@@ -68,7 +68,6 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const authAlgo = h['paypal-auth-algo'];
   const headerWebhookId = h['webhook-id']; // DEBUG: extra header check
 
-  // DEBUG: Log local webhookId and header webhook-id
   console.log('🔍 Local PAYPAL_WEBHOOK_ID:', webhookId);
   console.log('🔍 Header webhook-id:', headerWebhookId);
   if (webhookId !== headerWebhookId) {
@@ -100,21 +99,31 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
     throw new Error(`Failed to parse certificate: ${err.message}`);
   }
 
+  // Build the message buffer exactly as PayPal expects
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
-  console.log('📨 Message string for verification (utf8):');
-  console.log(messageBuffer.toString('utf8').substring(0, 500)); // log first 500 chars or less
+  const messageUtf8 = messageBuffer.toString('utf8');
+
+  console.log('📨 Message string for verification (utf8, snippet):');
+  console.log(messageUtf8.substring(0, 500));
+  console.log('📨 Message length:', messageUtf8.length);
+  console.log('🧩 Raw body length:', rawBodyBuffer.length);
+
+  // Base64 decode signature from header
+  const signatureBuffer = Buffer.from(transmissionSig, 'base64');
+  console.log(`📄 Signature (base64, length=${transmissionSig.length}):`, transmissionSig);
+  console.log(`📄 Signature buffer length: ${signatureBuffer.length}`);
 
   try {
     const verifier = crypto.createVerify('RSA-SHA256');
     verifier.update(messageBuffer);
     verifier.end();
 
-    const signatureBuffer = Buffer.from(transmissionSig, 'base64');
-    console.log(`📄 Signature (base64, length=${transmissionSig.length}):`, transmissionSig);
-    console.log(`📄 Signature buffer length: ${signatureBuffer.length}`);
-
     const isValid = verifier.verify(publicKeyPem, signatureBuffer);
     console.log('🔐 Signature valid?', isValid);
+
+    // For debugging: Log SHA256 digest of the message buffer (base64)
+    const digest = crypto.createHash('sha256').update(messageBuffer).digest('base64');
+    console.log('🔍 SHA256 digest of message (base64):', digest);
 
     console.timeEnd('🔒 Total signature verification');
     return isValid;
@@ -128,14 +137,12 @@ app.post('/paypal-webhook', async (req, res) => {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID;
   const rawBody = req.body; // Buffer from express.raw()
 
-  // DEBUG: log content-type header to verify raw middleware applied
   console.log('📢 Incoming Content-Type:', req.headers['content-type']);
 
   if (!rawBody) {
     return res.status(400).json({ success: false, message: 'Missing raw body' });
   }
 
-  // DEBUG: log raw body length and hex prefix
   console.log('🧩 Raw body length:', rawBody.length);
   console.log('🧩 Raw body hex prefix:', rawBody.slice(0, 20).toString('hex'));
 
