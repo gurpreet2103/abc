@@ -2,6 +2,8 @@ const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
 const { X509Certificate } = require('crypto');
+const CRC32 = require('crc-32'); // Add crc-32 dependency
+
 const app = express();
 
 // Middleware to preserve raw body as Buffer
@@ -18,12 +20,17 @@ function normalizeHeaders(headers) {
 
 // Build the message buffer for signature verification
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
+  // Compute CRC32 hash of raw body
+  const crc32Hash = CRC32.str(rawBodyBuffer.toString('utf8')).toString();
+  
   return Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
     Buffer.from('|'),
     Buffer.from(transmissionTime, 'utf8'),
     Buffer.from('|'),
     Buffer.from(webhookId, 'utf8'),
+    Buffer.from('|'),
+    Buffer.from(crc32Hash, 'utf8'),
     Buffer.from('|'),
     rawBodyBuffer,
   ]);
@@ -105,6 +112,12 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   // Validate algorithm is exactly what PayPal expects
   if (authAlgo !== 'SHA256withRSA') {
     throw new Error(`Unexpected PayPal auth algorithm: ${authAlgo}`);
+  }
+
+  // Optional: Validate timestamp to prevent replay attacks
+  const timeDiff = Math.abs(new Date() - new Date(transmissionTime)) / 1000 / 60;
+  if (timeDiff > 5) {
+    console.warn('⚠️ Transmission time is outside acceptable window:', transmissionTime);
   }
 
   // Fetch or get cached certificate PEM
