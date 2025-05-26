@@ -20,10 +20,17 @@ function normalizeHeaders(headers) {
 
 // Build the message buffer for signature verification
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
-  // Compute CRC32 hash of raw body
-  const crc32Hash = CRC32.str(rawBodyBuffer.toString('utf8')).toString();
+  // Compute CRC32 hash of raw body as unsigned 32-bit integer
+  const crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString();
   
-  return Buffer.concat([
+  // Debug each component
+  console.log('🔍 transmissionId:', transmissionId);
+  console.log('🔍 transmissionTime:', transmissionTime);
+  console.log('🔍 webhookId:', webhookId);
+  console.log('🔍 crc32Hash:', crc32Hash);
+  console.log('🔍 rawBody (first 100 chars):', rawBodyBuffer.toString('utf8').substring(0, 100));
+
+  const messageBuffer = Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
     Buffer.from('|'),
     Buffer.from(transmissionTime, 'utf8'),
@@ -34,6 +41,9 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
     Buffer.from('|'),
     rawBodyBuffer,
   ]);
+
+  console.log('🔍 Full message buffer (first 500 chars):', messageBuffer.toString('utf8', 0, 500));
+  return messageBuffer;
 }
 
 // Validate PayPal certificate URL domain
@@ -118,6 +128,8 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const timeDiff = Math.abs(new Date() - new Date(transmissionTime)) / 1000 / 60;
   if (timeDiff > 5) {
     console.warn('⚠️ Transmission time is outside acceptable window:', transmissionTime);
+    // Temporarily allow for testing
+    // throw new Error('Transmission time is outside acceptable window: ' + transmissionTime);
   }
 
   // Fetch or get cached certificate PEM
@@ -196,7 +208,16 @@ app.post('/paypal-webhook', async (req, res) => {
 
     if (!isValid) {
       console.warn('❌ Invalid PayPal signature');
-      return res.status(400).json({ success: false, message: 'Invalid PayPal signature' });
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid PayPal signature',
+        details: {
+          transmissionId: req.headers['paypal-transmission-id'],
+          transmissionTime: req.headers['paypal-transmission-time'],
+          webhookId: req.headers['webhook-id'],
+          crc32Hash: (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(),
+        },
+      });
     }
 
     console.log('✅ Valid webhook received');
