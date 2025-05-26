@@ -66,6 +66,14 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const transmissionSig = h['paypal-transmission-sig'];
   const transmissionTime = h['paypal-transmission-time'];
   const authAlgo = h['paypal-auth-algo'];
+  const headerWebhookId = h['webhook-id']; // DEBUG: extra header check
+
+  // DEBUG: Log local webhookId and header webhook-id
+  console.log('🔍 Local PAYPAL_WEBHOOK_ID:', webhookId);
+  console.log('🔍 Header webhook-id:', headerWebhookId);
+  if (webhookId !== headerWebhookId) {
+    console.warn('⚠️ WARNING: Local webhook ID does NOT match header webhook-id');
+  }
 
   if (!certUrl || !isPayPalDomain(certUrl)) throw new Error('Invalid or missing PayPal certificate URL');
   if (!transmissionId) throw new Error('Missing PayPal header: paypal-transmission-id');
@@ -120,9 +128,16 @@ app.post('/paypal-webhook', async (req, res) => {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID;
   const rawBody = req.body; // Buffer from express.raw()
 
+  // DEBUG: log content-type header to verify raw middleware applied
+  console.log('📢 Incoming Content-Type:', req.headers['content-type']);
+
   if (!rawBody) {
     return res.status(400).json({ success: false, message: 'Missing raw body' });
   }
+
+  // DEBUG: log raw body length and hex prefix
+  console.log('🧩 Raw body length:', rawBody.length);
+  console.log('🧩 Raw body hex prefix:', rawBody.slice(0, 20).toString('hex'));
 
   let parsedBody;
   try {
