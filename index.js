@@ -21,7 +21,7 @@ app.use((req, res, next) => {
   });
 });
 
-// Helper: Normalize header keys to lowercase for safe access
+// Normalize headers
 function normalizeHeaders(headers) {
   const normalized = {};
   for (const key in headers) {
@@ -30,12 +30,12 @@ function normalizeHeaders(headers) {
   return normalized;
 }
 
-// Build message string per PayPal docs
+// Build message string
 function buildMessage(transmissionId, transmissionTime, webhookId, body) {
   return `${transmissionId}|${transmissionTime}|${webhookId}|${body}`;
 }
 
-// Verify PayPal signature
+// Signature verification logic
 async function verifyPayPalSignature(headers, rawBody, webhookId) {
   const h = normalizeHeaders(headers);
 
@@ -53,24 +53,27 @@ async function verifyPayPalSignature(headers, rawBody, webhookId) {
     throw new Error('Missing PayPal headers.');
   }
 
-  // Fetch PayPal certificate
+  // Fetch certificate and extract public key as PEM
   const certRes = await axios.get(certUrl);
   const cert = certRes.data;
   const x509 = new X509Certificate(cert);
-  const publicKey = x509.publicKey;
+  const publicKeyPem = x509.publicKey.export({ type: 'spki', format: 'pem' });
 
   const message = buildMessage(transmissionId, transmissionTime, webhookId, rawBody);
   console.log('Message string for verification:', message);
 
+  // Perform verification
   const verifier = crypto.createVerify('RSA-SHA256');
   verifier.update(message);
   verifier.end();
 
-  const isValid = verifier.verify(publicKey, transmissionSig, 'base64');
+  const isValid = verifier.verify(publicKeyPem, transmissionSig, 'base64');
   console.log('Signature valid?', isValid);
+
   return isValid;
 }
 
+// Webhook route
 app.post('/paypal-webhook', async (req, res) => {
   const webhookId = process.env.PAYPAL_WEBHOOK_ID;
   console.log('Webhook received');
@@ -90,6 +93,7 @@ app.post('/paypal-webhook', async (req, res) => {
   }
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
