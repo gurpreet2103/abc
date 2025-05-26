@@ -109,6 +109,7 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
 
   // Fetch or get cached certificate PEM
   const certPem = await getCachedCert(certUrl);
+  console.log(`🔗 Certificate used: ${certUrl}`);
 
   let publicKeyPem;
   try {
@@ -138,7 +139,11 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
     verifier.end();
 
     const isValid = verifier.verify(publicKeyPem, signatureBuffer);
-    console.log('🔐 Signature valid?', isValid);
+    if (isValid) {
+      console.log('✅ Webhook signature verified successfully');
+    } else {
+      console.warn('❌ Webhook signature failed verification');
+    }
 
     // For debugging: Log SHA256 digest of the message buffer (base64)
     const digest = crypto.createHash('sha256').update(messageBuffer).digest('base64');
