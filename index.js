@@ -20,15 +20,22 @@ function normalizeHeaders(headers) {
 
 // Build the message buffer for signature verification
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
-  // Compute CRC32 hash of raw body as unsigned 32-bit integer
-  const crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString();
+  // Compute CRC32 hash of raw body as unsigned 32-bit integer or hex based on env variable
+  const crc32Format = process.env.CRC32_FORMAT || 'decimal'; // 'decimal' or 'hex'
+  let crc32Hash;
+  if (crc32Format === 'hex') {
+    crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString(16);
+  } else {
+    crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString();
+  }
   
   // Debug each component
   console.log('🔍 transmissionId:', transmissionId);
   console.log('🔍 transmissionTime:', transmissionTime);
   console.log('🔍 webhookId:', webhookId);
   console.log('🔍 crc32Hash:', crc32Hash);
-  console.log('🔍 rawBody (first 100 chars):', rawBodyBuffer.toString('utf8').substring(0, 100));
+  console.log('🔍 crc32Format:', crc32Format);
+  console.log('🔍 rawBody (first 500 chars):', rawBodyBuffer.toString('utf8').substring(0, 500));
 
   const messageBuffer = Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
@@ -50,7 +57,11 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
 function isPayPalDomain(url) {
   try {
     const { hostname } = new URL(url);
-    return hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
+    const isValid = hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
+    if (hostname.includes('sandbox.paypal.com')) {
+      console.warn('⚠️ Certificate URL indicates sandbox environment:', url);
+    }
+    return isValid;
   } catch {
     return false;
   }
@@ -199,7 +210,7 @@ app.post('/paypal-webhook', async (req, res) => {
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('📥 Webhook received');
-    console.log('Raw body (first 200 chars):', rawBody.toString('utf8').substring(0, 200));
+    console.log('Raw body (first 500 chars):', rawBody.toString('utf8').substring(0, 500));
   }
 
   try {
@@ -207,6 +218,10 @@ app.post('/paypal-webhook', async (req, res) => {
     const isValid = await verifyPayPalSignature(req.headers, rawBody, webhookId);
 
     if (!isValid) {
+      const crc32Format = process.env.CRC32_FORMAT || 'decimal';
+      const crc32Hash = crc32Format === 'hex'
+        ? (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(16)
+        : (CRC32.str(rawBody.toString('utf8')) >>> 0).toString();
       console.warn('❌ Invalid PayPal signature');
       return res.status(400).json({
         success: false,
@@ -215,7 +230,14 @@ app.post('/paypal-webhook', async (req, res) => {
           transmissionId: req.headers['paypal-transmission-id'],
           transmissionTime: req.headers['paypal-transmission-time'],
           webhookId: req.headers['webhook-id'],
-          crc32Hash: (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(),
+          crc32Hash,
+          crc32Format,
+          messageDigest: crypto.createHash('sha256').update(buildMessage(
+            req.headers['paypal-transmission-id'],
+            req.headers['paypal-transmission-time'],
+            req.headers['webhook-id'],
+            rawBody
+          )).digest('base64'),
         },
       });
     }
