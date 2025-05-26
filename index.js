@@ -20,23 +20,26 @@ function normalizeHeaders(headers) {
 
 // Build the message buffer for signature verification
 function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer) {
-  // Compute CRC32 hash of raw body as unsigned 32-bit integer or hex based on env variable
-  const crc32Format = process.env.CRC32_FORMAT || 'decimal'; // 'decimal' or 'hex'
+  // Compute CRC32 hash of raw body based on env variable
+  const crc32Format = process.env.CRC32_FORMAT || 'decimal'; // 'decimal', 'hex', or 'padded'
   let crc32Hash;
   if (crc32Format === 'hex') {
     crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString(16);
+  } else if (crc32Format === 'padded') {
+    crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString().padStart(10, '0');
   } else {
     crc32Hash = (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString();
   }
-  
+
   // Debug each component
   console.log('🔍 transmissionId:', transmissionId);
   console.log('🔍 transmissionTime:', transmissionTime);
   console.log('🔍 webhookId:', webhookId);
   console.log('🔍 crc32Hash:', crc32Hash);
   console.log('🔍 crc32Format:', crc32Format);
-  console.log('🔍 rawBody (first 1000 chars, truncated):', rawBodyBuffer.toString('utf8').substring(0, 1000));
+  console.log('🔍 rawBody (first 2000 chars, truncated):', rawBodyBuffer.toString('utf8').substring(0, 2000));
   console.log('🔍 rawBody SHA256:', crypto.createHash('sha256').update(rawBodyBuffer).digest('hex'));
+  console.log('🔍 rawBody CRC32 (hex for reference):', (CRC32.str(rawBodyBuffer.toString('utf8')) >>> 0).toString(16));
 
   const messageBuffer = Buffer.concat([
     Buffer.from(transmissionId, 'utf8'),
@@ -50,7 +53,8 @@ function buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer
     rawBodyBuffer,
   ]);
 
-  console.log('🔍 Full message buffer (first 1000 chars, truncated):', messageBuffer.toString('utf8', 0, 1000));
+  console.log('🔍 Full message buffer (first 2000 chars, truncated):', messageBuffer.toString('utf8', 0, 2000));
+  console.log('🔍 messageBuffer SHA256:', crypto.createHash('sha256').update(messageBuffer).digest('hex'));
   return messageBuffer;
 }
 
@@ -60,7 +64,7 @@ function isPayPalDomain(url) {
     const { hostname } = new URL(url);
     const isValid = hostname.endsWith('paypal.com') || hostname.endsWith('paypalobjects.com');
     if (hostname.includes('sandbox.paypal.com')) {
-      console.warn('⚠️ Certificate URL indicates sandbox environment. Ensure PAYPAL_WEBHOOK_ID is for sandbox:', url);
+      console.warn('⚠️ Certificate URL indicates sandbox environment. Ensure PAYPAL_WEBHOOK_ID is for sandbox and not production:', url);
     } else {
       console.log('✅ Certificate URL indicates production environment:', url);
     }
@@ -160,7 +164,7 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
 
   console.log('📨 Message string for verification (utf8, snippet):');
-  console.log(messageBuffer.toString('utf8', 0, 1000));
+  console.log(messageBuffer.toString('utf8', 0, 2000));
   console.log('📨 Message length:', messageBuffer.length);
   console.log('🧩 Raw body length:', rawBodyBuffer.length);
 
@@ -212,7 +216,7 @@ app.post('/paypal-webhook', async (req, res) => {
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('📥 Webhook received');
-    console.log('Raw body (first 1000 chars, truncated):', rawBody.toString('utf8').substring(0, 1000));
+    console.log('Raw body (first 2000 chars, truncated):', rawBody.toString('utf8').substring(0, 2000));
   }
 
   try {
@@ -221,9 +225,14 @@ app.post('/paypal-webhook', async (req, res) => {
 
     if (!isValid) {
       const crc32Format = process.env.CRC32_FORMAT || 'decimal';
-      const crc32Hash = crc32Format === 'hex'
-        ? (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(16)
-        : (CRC32.str(rawBody.toString('utf8')) >>> 0).toString();
+      let crc32Hash;
+      if (crc32Format === 'hex') {
+        crc32Hash = (CRC32.str(rawBody.toString('utf8')) >>> 0).toString(16);
+      } else if (crc32Format === 'padded') {
+        crc32Hash = (CRC32.str(rawBody.toString('utf8')) >>> 0).toString().padStart(10, '0');
+      } else {
+        crc32Hash = (CRC32.str(rawBody.toString('utf8')) >>> 0).toString();
+      }
       const messageBuffer = buildMessage(
         req.headers['paypal-transmission-id'],
         req.headers['paypal-transmission-time'],
@@ -241,6 +250,7 @@ app.post('/paypal-webhook', async (req, res) => {
           crc32Hash,
           crc32Format,
           rawBodySha256: crypto.createHash('sha256').update(rawBody).digest('hex'),
+          messageBufferSha256: crypto.createHash('sha256').update(messageBuffer).digest('hex'),
           messageDigest: crypto.createHash('sha256').update(messageBuffer).digest('base64'),
         },
       });
