@@ -1,7 +1,7 @@
-const express = require('express');
-const https = require('https');
-const crypto = require('crypto');
-const bodyParser = require('body-parser');
+import express from 'express';
+import https from 'https';
+import crypto from 'crypto';
+import bodyParser from 'body-parser';
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -27,7 +27,7 @@ app.post('/paypal-webhook', async (req, res) => {
   const certUrl = headers['paypal-cert-url'];
   const authAlgo = headers['paypal-auth-algo'];
   const transmissionSig = headers['paypal-transmission-sig'];
-  const webhookId = process.env.PAYPAL_WEBHOOK_ID || 'YOUR_WEBHOOK_ID_HERE'; // You must set this
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID || 'YOUR_WEBHOOK_ID_HERE'; // Replace or set env var
 
   if (!transmissionId || !transmissionTime || !certUrl || !authAlgo || !transmissionSig || !webhookId) {
     console.error("Missing headers for signature validation");
@@ -35,10 +35,8 @@ app.post('/paypal-webhook', async (req, res) => {
   }
 
   try {
-    // Step 1: Fetch PayPal public certificate
     const cert = await fetchCertificate(certUrl);
 
-    // Step 2: Construct expected signed string
     const expectedSigString = [
       transmissionId,
       transmissionTime,
@@ -46,7 +44,6 @@ app.post('/paypal-webhook', async (req, res) => {
       crypto.createHash('sha256').update(rawBody, 'utf8').digest('hex')
     ].join('|');
 
-    // Step 3: Verify signature
     const verifier = crypto.createVerify('RSA-SHA256');
     verifier.update(expectedSigString, 'utf8');
     verifier.end();
@@ -59,9 +56,7 @@ app.post('/paypal-webhook', async (req, res) => {
     }
 
     console.log("✅ Valid PayPal Webhook Signature");
-    // Process the webhook payload
-    const event = req.body;
-    console.log("Webhook Event:", event);
+    console.log("Webhook Event:", req.body);
 
     return res.status(200).send('OK');
   } catch (err) {
@@ -82,5 +77,5 @@ function fetchCertificate(certUrl) {
 }
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
