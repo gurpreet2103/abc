@@ -119,6 +119,11 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
   const messageBuffer = buildMessage(transmissionId, transmissionTime, webhookId, rawBodyBuffer);
   const signatureBuffer = Buffer.from(transmissionSig, 'base64');
 
+  // 🔍 Debug: show signatures and message
+  console.log('📬 Signature from PayPal (base64):', transmissionSig);
+  console.log('📥 Signature decoded (hex):', signatureBuffer.toString('hex'));
+  console.log('📦 Message buffer (hex):', messageBuffer.toString('hex'));
+
   try {
     const verifier = crypto.createVerify('RSA-SHA256');
     verifier.update(messageBuffer);
@@ -127,8 +132,9 @@ async function verifyPayPalSignature(headers, rawBodyBuffer, webhookId) {
     const isValid = verifier.verify(publicKeyPem, signatureBuffer);
     console.log(isValid ? '✅ Signature verified' : '❌ Signature invalid');
 
+    // Optional digest for comparison (not used directly for verification)
     const digest = crypto.createHash('sha256').update(messageBuffer).digest('base64');
-    console.log('🔍 SHA256 digest:', digest);
+    console.log('🔍 SHA256 digest (optional):', digest);
 
     console.timeEnd('🔒 Total signature verification');
     return isValid;
