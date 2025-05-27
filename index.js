@@ -56,7 +56,7 @@ async function verifyPaypalWebhook(headers, bodyRaw) {
     else throw new Error(`Unsupported auth algorithm: ${authAlgo}`);
 
     // Replace with your actual PayPal webhook ID here:
-    const webhookId = 'WH-54M31324A08453805-0TT498265C515724R';
+    const webhookId = '478032838T250025D';
 
     const message = `${transmissionId}|${transmissionTime}|${webhookId}|${bodyRaw}`;
 
