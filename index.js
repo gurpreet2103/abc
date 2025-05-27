@@ -1,11 +1,20 @@
 const express = require('express');
 const crypto = require('crypto');
 const axios = require('axios');
+require('dotenv').config();
+
 const app = express();
-app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf } }));
+
+// Middleware to retain raw body for signature verification
+app.use(express.json({
+    verify: (req, res, buf) => {
+        req.rawBody = buf;
+    }
+}));
 
 const CERT_CACHE = {};
 
+// Fetch and cache certificate from PayPal
 async function getCertificate(certUrl) {
     if (CERT_CACHE[certUrl]) {
         console.log('✅ Certificate retrieved from cache');
@@ -19,16 +28,19 @@ async function getCertificate(certUrl) {
     return cert;
 }
 
-function getMessage(authAlgo, certUrl, transmissionId, timeStamp, webhookId, body) {
-    const message = `${transmissionId}|${timeStamp}|${webhookId}|${body}`;
+// Construct the message to verify
+function getMessage(transmissionId, transmissionTime, webhookId, body) {
+    const message = `${transmissionId}|${transmissionTime}|${webhookId}|${body}`;
     console.log(`📦 Message buffer (raw): ${message}`);
     return message;
 }
 
+// Create SHA256 digest of the body (if needed)
 function getSha256Digest(body) {
     return crypto.createHash('sha256').update(body, 'utf8').digest('base64');
 }
 
+// Main webhook endpoint
 app.post('/', async (req, res) => {
     try {
         const headers = req.headers;
@@ -41,11 +53,19 @@ app.post('/', async (req, res) => {
         const webhookId = process.env.PAYPAL_WEBHOOK_ID;
         const rawBody = req.rawBody.toString('utf8');
 
-        const expectedSig = transmissionSig;
-        const bodyDigest = getSha256Digest(rawBody);
-        console.log(`🔍 SHA256 digest: ${bodyDigest}`);
+        console.log('📥 Received PayPal Webhook');
+        console.log('🔐 Headers:', {
+            'paypal-transmission-id': transmissionId,
+            'paypal-transmission-time': transmissionTime,
+            'paypal-cert-url': certUrl,
+            'paypal-auth-algo': authAlgo,
+            'paypal-transmission-sig': transmissionSig,
+        });
 
-        const message = getMessage(authAlgo, certUrl, transmissionId, transmissionTime, webhookId, rawBody);
+        const bodyDigest = getSha256Digest(rawBody);
+        console.log(`🔍 SHA256 Digest: ${bodyDigest}`);
+
+        const message = getMessage(transmissionId, transmissionTime, webhookId, rawBody);
 
         const certificatePem = await getCertificate(certUrl);
 
@@ -53,19 +73,21 @@ app.post('/', async (req, res) => {
         verifier.update(message, 'utf8');
         verifier.end();
 
-        const isValid = verifier.verify(certificatePem, expectedSig, 'base64');
+        const isValid = verifier.verify(certificatePem, transmissionSig, 'base64');
 
         if (!isValid) {
-            console.log('❌ Signature invalid');
+            console.log('❌ Signature verification failed.');
             return res.status(400).send('Invalid signature');
         }
 
-        console.log('✅ Signature verified');
-        res.status(200).send('OK');
+        console.log('✅ Signature verified successfully!');
+        // You can process the webhook payload here (req.body)
+
+        return res.status(200).send('OK');
 
     } catch (err) {
-        console.error('💥 Error verifying PayPal signature:', err);
-        res.status(500).send('Internal Server Error');
+        console.error('💥 Error during verification:', err);
+        return res.status(500).send('Internal Server Error');
     }
 });
 
