@@ -46,6 +46,10 @@ async function verifyPaypalWebhook(headers, bodyRaw) {
       'paypal-transmission-sig': transmissionSig,
     } = headers;
 
+    if (!transmissionId || !transmissionTime || !certUrl || !paypalAuthAlgo || !transmissionSig) {
+      throw new Error('Missing one or more required PayPal headers');
+    }
+
     let authAlgo = paypalAuthAlgo;
     if (authAlgo === 'SHA256withRSA') authAlgo = 'RSA-SHA256';
     else if (authAlgo === 'SHA1withRSA') authAlgo = 'RSA-SHA1';
@@ -82,6 +86,12 @@ app.post('/paypal-webhook', async (req, res) => {
   };
 
   const bodyRaw = req.rawBody;
+
+  // --- DEBUGGING OUTPUT ---
+  console.log('---- PAYPAL WEBHOOK RECEIVED ----');
+  console.log('Headers:', headers);
+  console.log('Raw Body:', bodyRaw);
+  console.log('-------------------------------');
 
   const valid = await verifyPaypalWebhook(headers, bodyRaw);
 
